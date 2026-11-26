@@ -1,0 +1,240 @@
+name: APK to Android Studio Project
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '*.apk'
+
+permissions:
+  contents: write
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find APK in root
+        id: apk
+        run: |
+          APK=$(find . -maxdepth 1 -type f -iname "*.apk" | sort | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: No APK found in repository root."
+            exit 1
+          fi
+
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "Found: $APK"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Install Apktool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apktool unzip jq
+
+      - name: Install JADX
+        run: |
+          URL=$(curl -fsSL \
+            https://api.github.com/repos/skylot/jadx/releases/latest \
+            | jq -r '[.assets[] |
+              select(.name | test("^jadx-[0-9][^/]*\\.zip$"))]
+              | first | .browser_download_url')
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "JADX download not found."
+            exit 1
+          fi
+
+          wget "$URL" -O jadx.zip
+          unzip -q jadx.zip -d jadx-dist
+
+          JADX=$(find jadx-dist -type f -path "*/bin/jadx" | head -n 1)
+
+          if [ -z "$JADX" ]; then
+            echo "JADX executable not found."
+            exit 1
+          fi
+
+          chmod +x "$JADX"
+          echo "$(dirname "$JADX")" >> "$GITHUB_PATH"
+
+      - name: Decode APK resources
+        env:
+          APK_PATH: ${{ steps.apk.outputs.path }}
+        run: |
+          apktool d "$APK_PATH" -o apktool_temp -f
+
+      - name: Recover Java source code
+        env:
+          APK_PATH: ${{ steps.apk.outputs.path }}
+        run: |
+          jadx --show-bad-code -d jadx_temp "$APK_PATH"
+
+      - name: Create Android Studio project
+        run: |
+          mkdir -p app/src/main/java
+          mkdir -p app/src/main/res
+          mkdir -p app/src/main/assets
+          mkdir -p app/src/main/jniLibs
+          mkdir -p gradle
+
+          # Restore Java source files
+          if [ -d jadx_temp/sources ]; then
+            cp -a jadx_temp/sources/. app/src/main/java/
+          fi
+
+          # Restore Android resources
+          if [ -d apktool_temp/res ]; then
+            cp -a apktool_temp/res/. app/src/main/res/
+          fi
+
+          # Restore assets
+          if [ -d apktool_temp/assets ]; then
+            cp -a apktool_temp/assets/. app/src/main/assets/
+          fi
+
+          # Restore native libraries
+          if [ -d apktool_temp/lib ]; then
+            cp -a apktool_temp/lib/. app/src/main/jniLibs/
+          fi
+
+          # Restore manifest
+          cp apktool_temp/AndroidManifest.xml app/src/main/AndroidManifest.xml
+
+      - name: Generate project configuration
+        run: |
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          import os
+
+          manifest = ET.parse("app/src/main/AndroidManifest.xml").getroot()
+          ns = "{http://schemas.android.com/apk/res/android}"
+
+          package = manifest.get("package", "com.reconstructed.app")
+          sdk = manifest.find("uses-sdk")
+
+          min_sdk = sdk.get(ns + "minSdkVersion", "21") if sdk is not None else "21"
+          target_sdk = sdk.get(ns + "targetSdkVersion", "28") if sdk is not None else "28"
+
+          try:
+              min_sdk = int(min_sdk)
+          except ValueError:
+              min_sdk = 21
+
+          try:
+              target_sdk = int(target_sdk)
+          except ValueError:
+              target_sdk = 28
+
+          version_code = manifest.get(ns + "versionCode", "1")
+          version_name = manifest.get(ns + "versionName", "1.0")
+
+          try:
+              version_code = int(version_code)
+          except ValueError:
+              version_code = 1
+
+          def quote(value):
+              return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+          with open("app/build.gradle.kts", "w") as f:
+              f.write(f'''
+          plugins {{
+              id("com.android.application")
+          }}
+
+          android {{
+              namespace = {quote(package)}
+              compileSdk = 35
+
+              defaultConfig {{
+                  applicationId = {quote(package)}
+                  minSdk = {min_sdk}
+                  targetSdk = 35
+                  versionCode = {version_code}
+                  versionName = {quote(version_name)}
+              }}
+          }}
+          ''')
+
+          print("Package:", package)
+          print("Minimum SDK:", min_sdk)
+          print("Original target SDK:", target_sdk)
+          print("Version:", version_name)
+          PY
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "ReconstructedApp"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+          }
+          EOF
+
+          cat > gradle/libs.versions.toml <<'EOF'
+          [versions]
+          agp = "8.7.3"
+
+          [plugins]
+          android-application = { id = "com.android.application", version.ref = "agp" }
+          EOF
+
+      - name: Generate Gradle wrapper
+        run: |
+          gradle wrapper --gradle-version 8.9
+          chmod +x gradlew
+
+      - name: Test Android project build
+        continue-on-error: true
+        run: |
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Clean temporary files
+        if: always()
+        run: |
+          rm -rf apktool_temp jadx_temp jadx-dist jadx.zip
+
+      - name: Commit reconstructed project
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app gradle build.gradle.kts settings.gradle.kts gradlew gradlew.bat
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Reconstruct Android Studio project from APK"
+            git push
+          fi

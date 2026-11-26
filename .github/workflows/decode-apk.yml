@@ -1,4 +1,5 @@
-name: Decode base.apk
+
+name: Decode APK
 
 on:
   workflow_dispatch:
@@ -21,10 +22,12 @@ jobs:
         id: apk
         run: |
           APK=$(find . -maxdepth 1 -type f -iname "*.apk" | head -n 1)
+
           if [ -z "$APK" ]; then
-            echo "No APK found!"
+            echo "No APK found in root!"
             exit 1
           fi
+
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
 
       - name: Setup Java
@@ -36,19 +39,21 @@ jobs:
       - name: Install Apktool
         run: |
           wget https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool
-          wget https://github.com/iBotPeaches/Apktool/releases/latest/download/apktool.jar
+          wget https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar -O apktool.jar
+
+          echo "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  apktool.jar" | sha256sum -c -
+
           chmod +x apktool
           sudo mv apktool /usr/local/bin/apktool
           sudo mv apktool.jar /usr/local/bin/apktool.jar
 
-      - name: Decode APK into repository root
+      - name: Decode APK
         run: |
           apktool d "${{ steps.apk.outputs.apk }}" -o decoded_temp -f
-
           cp -a decoded_temp/. .
           rm -rf decoded_temp
 
-      - name: Commit decoded files
+      - name: Commit decoded files to root
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -56,7 +61,6 @@ jobs:
           git add -A
 
           if ! git diff --cached --quiet; then
-            git commit -m "Automatically decode APK into root"
+            git commit -m "Automatically decode APK"
             git push
-
           fi

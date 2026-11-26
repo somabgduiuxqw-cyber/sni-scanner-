@@ -1,0 +1,20 @@
+.class public final synthetic Ltc1;
+.super Ljava/lang/Object;
+.source "r8-map-id-f885ffc0bcb76132b963ce9a91019d28230e92b478f9882b9de1060a5f450db7"
+
+# interfaces
+.implements Ljava/util/concurrent/Executor;
+
+
+# virtual methods
+.method public final execute(Ljava/lang/Runnable;)V
+    .locals 0
+
+    .line 1
+    invoke-interface {p1}, Ljava/lang/Runnable;->run()V
+
+    .line 2
+    .line 3
+    .line 4
+    return-void
+.end method

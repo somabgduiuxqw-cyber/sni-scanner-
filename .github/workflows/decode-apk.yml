@@ -1,10 +1,14 @@
+
 name: Decode APK
 
 on:
   workflow_dispatch:
+
   push:
     paths:
       - '*.apk'
+      - '**.apk'
+      - '.github/workflows/decode-apk.yml'
 
 permissions:
   contents: write

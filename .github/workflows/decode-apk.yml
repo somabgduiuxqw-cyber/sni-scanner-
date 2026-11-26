@@ -1,4 +1,4 @@
-name: Decode APK
+name: Decode base.apk
 
 on:
   workflow_dispatch:
